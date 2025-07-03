@@ -138,29 +138,38 @@ class TelegramService {
   }
 
   async setWebhook(webhookUrl) {
-    try {
-      console.log(`Setting webhook: ${webhookUrl}`); // Debug log
-      const response = await this.axiosInstance.post(
-        `${this.baseUrl}/setWebhook`,
-        {
-          url: webhookUrl,
-          allowed_updates: ["message"],
+    const maxRetries = 3;
+    let attempt = 1;
+
+    while (attempt <= maxRetries) {
+      try {
+        console.log(`Setting webhook (attempt ${attempt}): ${webhookUrl}`);
+        const response = await this.axiosInstance.post(
+          `${this.baseUrl}/setWebhook`,
+          {
+            url: webhookUrl,
+            allowed_updates: ["message"],
+          }
+        );
+        const data = response.data;
+        if (data.ok) {
+          logger.info(`Webhook set successfully: ${webhookUrl}`);
+          return { success: true };
         }
-      );
-      const data = response.data;
-      if (data.ok) {
-        logger.info(`Webhook set successfully: ${webhookUrl}`);
-        return { success: true };
+        logger.error(`Failed to set webhook: ${JSON.stringify(data)}`);
+        return { success: false, error: data.description || "Unknown error" };
+      } catch (error) {
+        logger.error(
+          `Error setting webhook (attempt ${attempt}): ${
+            error.message
+          } - ${JSON.stringify(error.response?.data || {})}`
+        );
+        if (attempt === maxRetries) {
+          return { success: false, error: error.message };
+        }
+        attempt++;
+        await new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
       }
-      logger.error(`Failed to set webhook: ${JSON.stringify(data)}`);
-      return { success: false, error: data.description || "Unknown error" };
-    } catch (error) {
-      logger.error(
-        `Error setting webhook: ${error.message} - ${JSON.stringify(
-          error.response?.data || {}
-        )}`
-      );
-      return { success: false, error: error.message };
     }
   }
 
@@ -265,24 +274,17 @@ app.post("/api/setup_bot", async (req, res) => {
         .findOne({ _id: new ObjectId(userId) });
     }
 
-    // Use ngrok or a public URL for webhook (replace with your ngrok URL)
-    const webhookBaseUrl =
-      process.env.WEBHOOK_BASE_URL || "http://localhost:5000";
+    // Use Render URL for webhook
+    const webhookBaseUrl = "https://xat-fg8p.onrender.com";
     const webhookUrl = `${webhookBaseUrl}/api/webhook/telegram/${userId}`;
-    if (!webhookBaseUrl.includes("localhost")) {
-      const webhookResult = await telegramService.setWebhook(webhookUrl);
-      if (!webhookResult.success) {
-        logger.error(
-          `Webhook setup failed for ${webhookUrl}: ${webhookResult.error}`
-        );
-        return res.status(500).json({
-          error: `Bot verified but webhook setup failed: ${webhookResult.error}`,
-        });
-      }
-    } else {
-      logger.warn(
-        "Skipping webhook setup for localhost. Use ngrok or a public URL for production."
+    const webhookResult = await telegramService.setWebhook(webhookUrl);
+    if (!webhookResult.success) {
+      logger.error(
+        `Webhook setup failed for ${webhookUrl}: ${webhookResult.error}`
       );
+      return res.status(500).json({
+        error: `Bot verified but webhook setup failed: ${webhookResult.error}`,
+      });
     }
 
     res.json({ user_id: userId, bot_username });
@@ -310,8 +312,7 @@ app.get("/api/dashboard/:userId", async (req, res) => {
       .limit(5)
       .toArray();
 
-    const webhookBaseUrl =
-      process.env.WEBHOOK_BASE_URL || "http://localhost:5000";
+    const webhookBaseUrl = "https://xat-fg8p.onrender.com";
     const webhookUrl = `${webhookBaseUrl}/api/webhook/tradingview/${userId}/${user.secret_key}`;
     res.json({ user, webhook_url: webhookUrl, alerts });
   } catch (error) {
@@ -435,20 +436,12 @@ app.post("/api/webhook/telegram/:userId", async (req, res) => {
           : chatType === "channel"
           ? "channel."
           : "chat.";
-      welcomeMessage += `\n\n📋 <b>Next Steps:</b>\n1️⃣ Copy your webhook URL from the dashboard\n2️⃣ Add it to your TradingView alert settings\n3️⃣ Start receiving alerts automatically!\n\n🔗 Dashboard: ${
-        req.protocol
-      }://${req.get("host")}/dashboard?user_id=${userId}`;
+      welcomeMessage += `\n\n📋 <b>Next Steps:</b>\n1️⃣ Copy your webhook URL from the dashboard\n2️⃣ Add it to your TradingView alert settings\n3️⃣ Start receiving alerts automatically!\n\n🔗 Dashboard: https://xat-fg8p.onrender.com/dashboard?user_id=${userId}`;
       await telegramService.sendMessage(chatId, welcomeMessage);
       logger.info(`Chat ${chatId} configured for user ${userId}`);
     } else if (text === "/start" && chatType === "private") {
       const telegramService = new TelegramService(user.bot_token);
-      const startMessage = `👋 <b>Welcome to @${
-        user.bot_username
-      }!</b>\n\nThis bot is ready to send you TradingView alerts.\n\n📋 <b>To authenticate and start receiving alerts:</b>\nSend this command: <code>${
-        user.auth_command
-      }</code>\n\n🔗 Dashboard: ${req.protocol}://${req.get(
-        "host"
-      )}/dashboard?user_id=${userId}`;
+      const startMessage = `👋 <b>Welcome to @${user.bot_username}!</b>\n\nThis bot is ready to send you TradingView alerts.\n\n📋 <b>To authenticate and start receiving alerts:</b>\nSend this command: <code>${user.auth_command}</code>\n\n🔗 Dashboard: https://xat-fg8p.onrender.com/dashboard?user_id=${userId}`;
       await telegramService.sendMessage(chatId, startMessage);
     }
 
@@ -500,7 +493,9 @@ const startServer = async () => {
     const port = process.env.PORT || 5000;
     app.listen(port, () => {
       console.log(`🚀 Starting TradingView Telegram Bot Integration Server...`);
-      console.log(`📡 Server will be available at: http://localhost:${port}`);
+      console.log(
+        `📡 Server will be available at: https://xat-fg8p.onrender.com`
+      );
     });
   } catch (error) {
     console.error("Failed to start server:", error);
