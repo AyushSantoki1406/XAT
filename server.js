@@ -480,6 +480,11 @@ app.use((req, res) => {
     );
 });
 
+// Node.js/Express
+app.get("/", (req, res) => {
+  res.send("Server is alive!");
+});
+
 app.use((err, req, res, next) => {
   logger.error(`Server error: ${err}`);
   res
