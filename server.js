@@ -8,7 +8,8 @@ const crypto = require("crypto");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middleware
+// Middleware to handle plain text
+app.use(express.text({ type: "text/plain" }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static("public"));
@@ -55,18 +56,21 @@ class TelegramService {
     }
   }
 
-  async sendMessage(chatId, text, parseMode = "HTML") {
+  async sendMessage(chatId, text, parseMode = null) {
     try {
       const payload = {
         chat_id: chatId,
         text: text,
-        parse_mode: parseMode,
       };
+      if (parseMode) payload.parse_mode = parseMode;
       const response = await axios.post(
         `${this.baseUrl}/sendMessage`,
         payload,
-        { timeout: 10000 }
+        {
+          timeout: 10000,
+        }
       );
+      console.log(`Sent message to chat ${chatId}:`, text);
       return response.status === 200;
     } catch (error) {
       console.error("Error sending message:", error.message);
@@ -80,6 +84,7 @@ class TelegramService {
       const response = await axios.post(`${this.baseUrl}/setWebhook`, payload, {
         timeout: 10000,
       });
+      console.log(`Webhook set successfully: ${webhookUrl}`);
       return response.status === 200;
     } catch (error) {
       console.error("Error setting webhook:", error.message);
@@ -89,24 +94,15 @@ class TelegramService {
 
   formatTradingViewAlert(alertData) {
     try {
-      // Handle both JSON string and object
-      // const data =
-      // typeof alertData === "string" ? JSON.parse(alertData) : alertData;
-      const data = alertData;
-
-      // Extract common fields
-      const symbol = data.ticker || data.symbol || "Unknown";
-      const action = data["strategy.order.action"] || data.action || "Alert";
-      const price = data.close || data.price || "N/A";
-      const time = data.time || new Date().toISOString();
-
-      // Create formatted message
-      const message = data;
-      console.dir(data);
-
+      console.log("formatTradingViewAlert input:", alertData);
+      console.log("Input type:", typeof alertData);
+      // Return plain text as-is, or convert non-string to string
+      const message =
+        typeof alertData === "string" ? alertData : JSON.stringify(alertData);
+      console.log("Formatted message:", message);
       return message.trim();
     } catch (error) {
-      console.error("Error formatting alert:", error.message);
+      console.error("Error processing alert:", error.message);
       return `TradingView Alert: ${JSON.stringify(alertData)}`;
     }
   }
@@ -353,7 +349,7 @@ app.post("/setup", async (req, res) => {
     flashMessage(req, "Bot configured successfully!", "success");
     res.redirect(`/dashboard/${userId}`);
   } catch (error) {
-    console.error("Error in setup:", error);
+    console.error("Error in setup:", error.message);
     flashMessage(req, "An error occurred while setting up the bot", "error");
     res.redirect("/");
   }
@@ -427,7 +423,7 @@ app.get("/dashboard/:userId", (req, res) => {
                     <i class="fas fa-${
                       alert.sentSuccessfully ? "check" : "times"
                     } me-1"></i>
-                    ${alert.createdAt.toLocaleTimeString()}
+                    ${alert.createdAt.toLocaleString()} - ${alert.webhookData}
                 </small>
             </div>
         `
@@ -455,20 +451,30 @@ app.post("/webhook/tradingview/:userId/:secretKey", async (req, res) => {
     const userData = users.get(userId);
 
     if (!userData || userData.secretKey !== secretKey) {
-      return res.status(404).json({ error: "Not found" });
+      console.log(
+        `Unauthorized access: userId=${userId}, secretKey=${secretKey}`
+      );
+      return res.status(401).json({ error: "Unauthorized" });
     }
 
-    // Get webhook data
-    const webhookData = req.body || {};
+    // Log full request details for debugging
+    console.log("Webhook request headers:", req.headers);
+    console.log("Webhook request body:", req.body);
+    console.log("Content-Type:", req.get("Content-Type"));
+
+    // Get webhook data, handle plain text or JSON
+    const webhookData =
+      typeof req.body === "string" ? req.body : JSON.stringify(req.body);
     console.log(`Received TradingView alert for user ${userId}:`, webhookData);
 
     // Check if chat is configured
     if (!userData.chatId) {
       const errorMsg =
         "Chat not configured. Please complete authentication first.";
+      console.log(`Error: ${errorMsg}`);
       alerts.push({
         userId,
-        webhookData: JSON.stringify(webhookData),
+        webhookData,
         sentSuccessfully: false,
         createdAt: new Date(),
         errorMessage: errorMsg,
@@ -480,6 +486,10 @@ app.post("/webhook/tradingview/:userId/:secretKey", async (req, res) => {
     const telegramService = new TelegramService(userData.botToken);
     const formattedMessage =
       telegramService.formatTradingViewAlert(webhookData);
+    console.log(
+      `Sending to Telegram chat ${userData.chatId}:`,
+      formattedMessage
+    );
 
     const success = await telegramService.sendMessage(
       userData.chatId,
@@ -489,7 +499,7 @@ app.post("/webhook/tradingview/:userId/:secretKey", async (req, res) => {
     // Log alert
     alerts.push({
       userId,
-      webhookData: JSON.stringify(webhookData),
+      webhookData,
       sentSuccessfully: success,
       createdAt: new Date(),
       errorMessage: success ? null : "Failed to send message",
@@ -503,7 +513,15 @@ app.post("/webhook/tradingview/:userId/:secretKey", async (req, res) => {
       return res.status(500).json({ error: "Failed to send alert" });
     }
   } catch (error) {
-    console.error("Error in tradingview webhook:", error);
+    console.error("Error in tradingview webhook:", error.message);
+    alerts.push({
+      userId: parseInt(req.params.userId),
+      webhookData:
+        typeof req.body === "string" ? req.body : JSON.stringify(req.body),
+      sentSuccessfully: false,
+      createdAt: new Date(),
+      errorMessage: error.message,
+    });
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -514,7 +532,8 @@ app.post("/webhook/telegram/:userId", async (req, res) => {
     const userData = users.get(userId);
 
     if (!userData) {
-      return res.status(404).json({ error: "Not found" });
+      console.log(`User not found: userId=${userId}`);
+      return res.status(404).json({ error: "User not found" });
     }
 
     const update = req.body;
@@ -532,7 +551,7 @@ app.post("/webhook/telegram/:userId", async (req, res) => {
         const chatType = chat.type || "private";
 
         console.log(
-          `Received custom auth command from chat ${chatId}, type: ${chatType}`
+          `Received auth command from chat ${chatId}, type: ${chatType}`
         );
 
         // Update user's chat_id
@@ -550,7 +569,7 @@ app.post("/webhook/telegram/:userId", async (req, res) => {
 
     return res.json({ status: "ok" });
   } catch (error) {
-    console.error("Error in telegram webhook:", error);
+    console.error("Error in telegram webhook:", error.message);
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -560,7 +579,8 @@ app.get("/regenerate/:userId", (req, res) => {
   const userData = users.get(userId);
 
   if (!userData) {
-    return res.status(404).send("User not found");
+    flashMessage(req, "User not found", "error");
+    return res.redirect("/");
   }
 
   // Generate new secret
@@ -573,6 +593,7 @@ app.get("/regenerate/:userId", (req, res) => {
 
 // Error handlers
 app.use((req, res) => {
+  console.log(`404 Not Found: ${req.method} ${req.url}`);
   res.status(404).send(`
         <div class="container mt-5 text-center">
             <h1>Page Not Found</h1>
@@ -583,7 +604,7 @@ app.use((req, res) => {
 });
 
 app.use((error, req, res, next) => {
-  console.error("Server error:", error);
+  console.error("Server error:", error.message);
   res.status(500).send(`
         <div class="container mt-5 text-center">
             <h1>Internal Server Error</h1>
