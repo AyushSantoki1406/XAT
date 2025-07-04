@@ -147,6 +147,11 @@ app.get("/", (req, res) => {
   res.json({ flashMessages });
 });
 
+app.get("/health", (req, res) => {
+  res.send("OK");
+});
+
+
 app.post("/setup", async (req, res) => {
   try {
     const { bot_token, alert_type } = req.body;
@@ -425,9 +430,7 @@ app.use((error, req, res, next) => {
 
 // Start server
 app.listen(PORT, "0.0.0.0", () => {
-  console.log("🤖 TradingView Telegram Bot - Node.js Version");
-  console.log(`📱 Server running on http://localhost:${PORT}`);
-  console.log("💡 Press Ctrl+C to stop the server");
+  console.log(`Server running on http://localhost:${PORT}`);
 });
 
 module.exports = app;
