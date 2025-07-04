@@ -1,14 +1,22 @@
 const express = require("express");
 const axios = require("axios");
 const { v4: uuidv4 } = require("uuid");
-const path = require("path");
 const crypto = require("crypto");
+const cors = require("cors"); // Added CORS package
 
 // Initialize Express app
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middleware to handle plain text and JSON
+// Middleware to handle plain text, JSON, and CORS
+app.use(
+  cors({
+    origin: "https://xatc.vercel.app", // Allow only your React app
+    credentials: true, // Allow headers like X-Session-ID
+    methods: ["GET", "POST", "OPTIONS"], // Allow these methods
+    allowedHeaders: ["Content-Type", "X-Session-ID"], // Allow these headers
+  })
+);
 app.use(express.text({ type: "text/plain" }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -108,15 +116,15 @@ class TelegramService {
   }
 }
 
-function generateAuthCommand(botUsername, userId) {
+function generateAuthCommand(botUsername, XAlgoID) {
   const secret = "3HKlcLqdkJmvjhoAf8FnYzr4Ua6QBWtG";
-  const data = `${userId}:${botUsername}`;
+  const data = `${XAlgoID}`; // Use XAlgoID in HMAC source
   const hmac = crypto.createHmac("sha256", secret);
   hmac.update(data);
   const encodedData = hmac.digest("base64");
-  console.log(
-    `Generated auth command for @${botUsername}: /auth@${botUsername} ${encodedData}`
-  );
+
+  console.log(`@${botUsername}: /auth@${botUsername} ${encodedData}`);
+
   return `/auth@${botUsername} ${encodedData}`;
 }
 
@@ -133,173 +141,10 @@ function getFlashMessages(req) {
   return messages;
 }
 
-// HTML Templates
-const INDEX_HTML = `<!DOCTYPE html>
-<html data-bs-theme="dark">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TradingView Telegram Bot</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
-    <style>
-        body { background: #1a1a1a; }
-        .card { border: none; }
-        .auth-box { background: #2d4a2d; border: 1px solid #4a5c4a; padding: 1rem; border-radius: 0.5rem; }
-        .webhook-url { background: #2d2d2d; border: 1px solid #555; }
-    </style>
-</head>
-<body>
-    <nav class="navbar navbar-dark bg-dark">
-        <div class="container">
-            <span class="navbar-brand"><i class="fas fa-robot me-2"></i>TradingView Bot</span>
-        </div>
-    </nav>
-    <div class="container mt-4">
-        {{FLASH_MESSAGES}}
-        
-        <div class="row justify-content-center">
-            <div class="col-md-8">
-                <div class="card">
-                    <div class="card-header">
-                        <h3><i class="fas fa-cog me-2"></i>Connect Telegram Bot</h3>
-                    </div>
-                    <div class="card-body">
-                        <form method="POST" action="/setup">
-                            <div class="mb-3">
-                                <label class="form-label">Bot Token</label>
-                                <input type="text" class="form-control" name="bot_token" required 
-                                       placeholder="1234567890:ABCdefGHIjklMNOpqrsTUVwxyz">
-                                <div class="form-text">Get your bot token from @BotFather on Telegram</div>
-                            </div>
-                            
-                            <div class="mb-3">
-                                <label class="form-label">Alert Type</label>
-                                <select class="form-select" name="alert_type" required>
-                                    <option value="personal">Personal Messages</option>
-                                    <option value="group">Group Chat</option>
-                                    <option value="channel">Channel</option>
-                                </select>
-                            </div>
-                            
-                            <button type="submit" class="btn btn-primary">
-                                <i class="fas fa-check me-2"></i>Setup Bot
-                            </button>
-                        </form>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-</body>
-</html>`;
-
-const DASHBOARD_HTML = `<!DOCTYPE html>
-<html data-bs-theme="dark">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bot Dashboard</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
-    <style>
-        body { background: #1a1a1a; }
-        .card { border: none; }
-        .auth-box { background: #2d4a2d; border: 1px solid #4a5c4a; padding: 1rem; border-radius: 0.5rem; }
-        .webhook-url { background: #2d2d2d; border: 1px solid #555; padding: 0.75rem; border-radius: 0.375rem; }
-        .copy-btn { cursor: pointer; }
-    </style>
-</head>
-<body>
-    <nav class="navbar navbar-dark bg-dark">
-        <div class="container">
-            <span class="navbar-brand"><i class="fas fa-robot me-2"></i>TradingView Bot</span>
-            <a href="/" class="btn btn-outline-light btn-sm">New Bot</a>
-        </div>
-    </nav>
-    
-    <div class="container mt-4">
-        {{FLASH_MESSAGES}}
-        
-        <div class="row">
-            <div class="col-md-8">
-                <div class="card">
-                    <div class="card-header">
-                        <h4><i class="fas fa-robot me-2"></i>Bot: @{{BOT_USERNAME}}</h4>
-                    </div>
-                    <div class="card-body">
-                        {{AUTH_STATUS}}
-                        
-                        <div class="mt-4">
-                            <h6>Webhook URL for TradingView:</h6>
-                            <div class="webhook-url d-flex align-items-center justify-content-between">
-                                <code id="webhook-url">{{WEBHOOK_URL}}</code>
-                                <i class="fas fa-copy copy-btn ms-2" onclick="copyWebhook()" title="Copy to clipboard"></i>
-                            </div>
-                            <small class="text-muted">Copy this URL and use it in your TradingView alert webhook settings.</small>
-                        </div>
-                        
-                        <div class="mt-4">
-                            <a href="/regenerate/{{USER_ID}}" class="btn btn-warning btn-sm">
-                                <i class="fas fa-sync me-2"></i>Regenerate Secret
-                            </a>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            
-            <div class="col-md-4">
-                <div class="card">
-                    <div class="card-header">
-                        <h6><i class="fas fa-chart-line me-2"></i>Recent Alerts</h6>
-                    </div>
-                    <div class="card-body">
-                        {{RECENT_ALERTS}}
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-    
-    <script>
-        function copyWebhook() {
-            const webhookUrl = document.getElementById('webhook-url').textContent;
-            navigator.clipboard.writeText(webhookUrl).then(() => {
-                const icon = document.querySelector('.copy-btn');
-                icon.className = 'fas fa-check copy-btn ms-2';
-                setTimeout(() => {
-                    icon.className = 'fas fa-copy copy-btn ms-2';
-                }, 2000);
-            });
-        }
-    </script>
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-</body>
-</html>`;
-
-function renderFlashMessages(messages) {
-  if (!messages || messages.length === 0) return "";
-
-  return messages
-    .map(
-      ({ message, type }) => `
-        <div class="alert alert-${
-          type === "error" ? "danger" : "success"
-        } alert-dismissible">
-            ${message}
-            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-        </div>
-    `
-    )
-    .join("");
-}
-
 // Routes
 app.get("/", (req, res) => {
-  const flashMessages = renderFlashMessages(getFlashMessages(req));
-  const html = INDEX_HTML.replace("{{FLASH_MESSAGES}}", flashMessages);
-  res.send(html);
+  const flashMessages = getFlashMessages(req);
+  res.json({ flashMessages });
 });
 
 app.post("/setup", async (req, res) => {
@@ -308,7 +153,7 @@ app.post("/setup", async (req, res) => {
 
     if (!bot_token || !bot_token.trim()) {
       flashMessage(req, "Bot token is required", "error");
-      return res.redirect("/");
+      return res.status(400).json({ error: "Bot token is required" });
     }
 
     // Verify bot token
@@ -321,16 +166,19 @@ app.post("/setup", async (req, res) => {
         "Invalid bot token. Please check your token and try again.",
         "error"
       );
-      return res.redirect("/");
+      return res.status(400).json({
+        error: "Invalid bot token. Please check your token and try again.",
+      });
     }
 
     // Generate user ID and secret
     const userId = users.size + 1;
     const secretKey = uuidv4();
     const botUsername = botInfo.username || "unknown";
+    const XAlgoID = "FAOZ135";
 
     // Generate authentication command
-    const authCommand = generateAuthCommand(botUsername, userId);
+    const authCommand = generateAuthCommand(botUsername, XAlgoID);
 
     // Store user data in memory
     const userData = {
@@ -352,11 +200,14 @@ app.post("/setup", async (req, res) => {
     await telegramService.setWebhook(webhookUrl);
 
     flashMessage(req, "Bot configured successfully!", "success");
-    res.redirect(`/dashboard/${userId}`);
+    res.json({ userId, flashMessages: getFlashMessages(req) });
   } catch (error) {
     console.error("Error in setup:", error.message);
     flashMessage(req, "An error occurred while setting up the bot", "error");
-    res.redirect("/");
+    res.status(500).json({
+      error: "An error occurred while setting up the bot",
+      flashMessages: getFlashMessages(req),
+    });
   }
 });
 
@@ -365,88 +216,47 @@ app.get("/dashboard/:userId", (req, res) => {
   const userData = users.get(userId);
 
   if (!userData) {
-    return res.status(404).send("User not found");
+    return res.status(404).json({ error: "User not found" });
   }
 
   // Get recent alerts for this user
-  const userAlerts = alerts.filter((alert) => alert.userId === userId);
-  const recentAlerts = userAlerts.slice(-10).reverse();
+  const userAlerts = alerts
+    .filter((alert) => alert.userId === userId)
+    .slice(-10)
+    .reverse();
 
   // Generate webhook URL
   const protocol = req.get("X-Forwarded-Proto") || req.protocol;
   const host = req.get("Host");
   const webhookUrl = `${protocol}://${host}/webhook/tradingview/${userId}/${userData.secretKey}`;
 
-  // Generate auth status HTML
-  let authStatus = "";
+  // Generate auth status
+  let authStatus = {};
   if (userData.alertType === "personal" && !userData.chatId) {
-    authStatus = `
-            <div class="alert alert-warning">
-                <h6><i class="fas fa-exclamation-triangle me-2"></i>Action Required</h6>
-                <p class="mb-2">To complete personal message setup:</p>
-                <ol class="mb-0 ps-3">
-                    <li>Start a chat with your bot <strong>@${userData.botUsername}</strong></li>
-                    <li>Send this command: <code>${userData.authCommand}</code></li>
-                </ol>
-            </div>
-        `;
+    authStatus = {
+      type: "warning",
+      message: `To complete personal message setup: <ol><li>Start a chat with your bot <strong>@${userData.botUsername}</strong></li><li>Send this command: <code>${userData.authCommand}</code></li></ol>`,
+    };
   } else if (userData.chatId) {
-    authStatus = `
-            <div class="alert alert-success">
-                <h6><i class="fas fa-check-circle me-2"></i>${
-                  userData.alertType.charAt(0).toUpperCase() +
-                  userData.alertType.slice(1)
-                } Configured!</h6>
-                <p class="mb-0">Your ${
-                  userData.alertType
-                } is ready to receive alerts.</p>
-            </div>
-        `;
+    authStatus = {
+      type: "success",
+      message: `Your ${userData.alertType} is ready to receive alerts.`,
+    };
   } else {
-    authStatus = `
-            <div class="alert alert-info">
-                <h6><i class="fas fa-info-circle me-2"></i>Setup Instructions</h6>
-                <p class="mb-2">For ${userData.alertType} alerts:</p>
-                <ol class="mb-0 ps-3">
-                    <li>Add your bot <strong>@${userData.botUsername}</strong> to your ${userData.alertType}</li>
-                    <li>Send this command: <code>${userData.authCommand}</code></li>
-                </ol>
-            </div>
-        `;
+    authStatus = {
+      type: "info",
+      message: `For ${userData.alertType} alerts: <ol><li>Add your bot <strong>@${userData.botUsername}</strong> to your ${userData.alertType}</li><li>Send this command: <code>${userData.authCommand}</code></li></ol>`,
+    };
   }
 
-  // Generate recent alerts HTML
-  let recentAlertsHtml = "";
-  if (recentAlerts.length > 0) {
-    recentAlertsHtml = recentAlerts
-      .map(
-        (alert) => `
-            <div class="alert alert-${
-              alert.sentSuccessfully ? "success" : "danger"
-            } py-2 mb-2">
-                <small>
-                    <i class="fas fa-${
-                      alert.sentSuccessfully ? "check" : "times"
-                    } me-1"></i>
-                    ${alert.createdAt.toLocaleString()} - ${alert.webhookData}
-                </small>
-            </div>
-        `
-      )
-      .join("");
-  } else {
-    recentAlertsHtml = '<p class="text-muted mb-0">No alerts yet</p>';
-  }
-
-  const flashMessages = renderFlashMessages(getFlashMessages(req));
-  const html = DASHBOARD_HTML.replace("{{FLASH_MESSAGES}}", flashMessages)
-    .replace("{{BOT_USERNAME}}", userData.botUsername)
-    .replace("{{AUTH_STATUS}}", authStatus)
-    .replace("{{WEBHOOK_URL}}", webhookUrl)
-    .replace("{{USER_ID}}", userId)
-    .replace("{{RECENT_ALERTS}}", recentAlertsHtml);
-
-  res.send(html);
+  res.json({
+    botUsername: userData.botUsername,
+    authStatus,
+    webhookUrl,
+    userId,
+    recentAlerts: userAlerts,
+    flashMessages: getFlashMessages(req),
+  });
 });
 
 app.post("/webhook/tradingview/:userId/:secretKey", async (req, res) => {
@@ -585,7 +395,10 @@ app.get("/regenerate/:userId", (req, res) => {
 
   if (!userData) {
     flashMessage(req, "User not found", "error");
-    return res.redirect("/");
+    return res.status(404).json({
+      error: "User not found",
+      flashMessages: getFlashMessages(req),
+    });
   }
 
   // Generate new secret
@@ -593,30 +406,21 @@ app.get("/regenerate/:userId", (req, res) => {
   users.set(userId, userData);
 
   flashMessage(req, "Secret key regenerated successfully!", "success");
-  res.redirect(`/dashboard/${userId}`);
+  res.json({
+    userId,
+    flashMessages: getFlashMessages(req),
+  });
 });
 
 // Error handlers
 app.use((req, res) => {
   console.log(`404 Not Found: ${req.method} ${req.url}`);
-  res.status(404).send(`
-        <div class="container mt-5 text-center">
-            <h1>Page Not Found</h1>
-            <p>The requested page could not be found.</p>
-            <a href="/" class="btn btn-primary">Go Home</a>
-        </div>
-    `);
+  res.status(404).json({ error: "Page not found" });
 });
 
 app.use((error, req, res, next) => {
   console.error("Server error:", error.message);
-  res.status(500).send(`
-        <div class="container mt-5 text-center">
-            <h1>Internal Server Error</h1>
-            <p>Something went wrong on our end.</p>
-            <a href="/" class="btn btn-primary">Go Home</a>
-        </div>
-    `);
+  res.status(500).json({ error: "Internal server error" });
 });
 
 // Start server
