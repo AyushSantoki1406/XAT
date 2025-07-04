@@ -8,7 +8,7 @@ const crypto = require("crypto");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middleware to handle plain text
+// Middleware to handle plain text and JSON
 app.use(express.text({ type: "text/plain" }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -109,9 +109,15 @@ class TelegramService {
 }
 
 function generateAuthCommand(botUsername, userId) {
-  const timestamp = Math.floor(Date.now() / 1000);
-  const authData = `${userId}:${timestamp}`;
-  const encodedData = Buffer.from(authData).toString("base64");
+  // Use HMAC-SHA256 with botUsername and userId
+  const secret = "your-secret-key"; // Replace with a secure secret key
+  const data = `${userId}:${botUsername}`;
+  const hmac = crypto.createHmac("sha256", secret);
+  hmac.update(data);
+  const encodedData = hmac.digest("base64");
+  console.log(
+    `Generated auth command for @${botUsername}: /auth@${botUsername} ${encodedData}`
+  );
   return `/auth@${botUsername} ${encodedData}`;
 }
 
