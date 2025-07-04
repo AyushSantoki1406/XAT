@@ -90,8 +90,9 @@ class TelegramService {
   formatTradingViewAlert(alertData) {
     try {
       // Handle both JSON string and object
-      const data =
-        typeof alertData === "string" ? JSON.parse(alertData) : alertData;
+      // const data =
+      // typeof alertData === "string" ? JSON.parse(alertData) : alertData;
+      const data = alertData;
 
       // Extract common fields
       const symbol = data.ticker || data.symbol || "Unknown";
@@ -100,8 +101,8 @@ class TelegramService {
       const time = data.time || new Date().toISOString();
 
       // Create formatted message
-      const message = `${JSON.stringify(data, null, 2)} : ${data}`;
-      console.dir(data)
+      const message = data;
+      console.dir(data);
 
       return message.trim();
     } catch (error) {
