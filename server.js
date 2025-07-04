@@ -1,512 +1,610 @@
 const express = require("express");
-const { MongoClient, ObjectId } = require("mongodb");
 const axios = require("axios");
 const { v4: uuidv4 } = require("uuid");
-const logger = require("winston");
-const base64 = require("base-64");
-const cors = require("cors");
-const https = require("https");
+const path = require("path");
+const crypto = require("crypto");
 
+// Initialize Express app
 const app = express();
+const PORT = process.env.PORT || 3000;
+
+// Middleware
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 app.use(express.static("public"));
-app.use(
-  cors({
-    origin: "*", // Allow all origins for development
-    methods: ["GET", "POST"],
-    allowedHeaders: ["Content-Type"],
-  })
-);
 
-// Logger setup
-logger.configure({
-  transports: [
-    new logger.transports.Console({
-      format: logger.format.combine(
-        logger.format.timestamp(),
-        logger.format.printf(
-          ({ timestamp, level, message }) =>
-            `${timestamp} - ${level}: ${message}`
-        )
-      ),
-    }),
-  ],
-});
+// Session middleware (simple in-memory session)
+const sessions = new Map();
 
-// MongoDB setup
-const MONGODB_URI = process.env.MONGODB_URI || "mongodb://localhost:27017";
-const DB_NAME = "telegram_tradingview";
-let db;
-
-const initDatabase = async () => {
-  try {
-    const client = new MongoClient(MONGODB_URI, { useUnifiedTopology: true });
-    await client.connect();
-    db = client.db(DB_NAME);
-    logger.info("Connected to MongoDB");
-
-    const collections = await db.listCollections().toArray();
-    const collectionNames = collections.map((c) => c.name);
-
-    if (!collectionNames.includes("users")) {
-      await db.createCollection("users");
-      await db
-        .collection("users")
-        .createIndex({ telegram_user_id: 1 }, { unique: true });
-    }
-
-    if (!collectionNames.includes("alerts")) {
-      await db.createCollection("alerts");
-    }
-  } catch (error) {
-    logger.error(`Database connection error: ${error}`);
-    throw error;
+function sessionMiddleware(req, res, next) {
+  const sessionId =
+    req.headers["x-session-id"] || crypto.randomBytes(16).toString("hex");
+  req.sessionId = sessionId;
+  if (!sessions.has(sessionId)) {
+    sessions.set(sessionId, {});
   }
-};
+  req.session = sessions.get(sessionId);
+  res.setHeader("X-Session-ID", sessionId);
+  next();
+}
+
+app.use(sessionMiddleware);
+
+// In-memory storage (replaces database)
+const users = new Map(); // user_id -> user_data
+const alerts = []; // list of alert records
 
 class TelegramService {
   constructor(botToken) {
     this.botToken = botToken;
     this.baseUrl = `https://api.telegram.org/bot${botToken}`;
-    this.axiosInstance = axios.create({
-      httpsAgent: new https.Agent({
-        rejectUnauthorized: false, // Disable certificate verification for development
-      }),
-      timeout: 30000, // 30 seconds timeout
-    });
   }
 
   async verifyBotToken() {
-    const maxRetries = 3;
-    let attempt = 1;
-
-    while (attempt <= maxRetries) {
-      try {
-        console.log(
-          `Verifying bot token (attempt ${attempt}): ${this.botToken.substring(
-            0,
-            10
-          )}...`
-        );
-        const response = await this.axiosInstance.get(`${this.baseUrl}/getMe`);
-        const data = response.data;
-        if (data.ok) {
-          logger.info(`Bot token verified: @${data.result.username}`);
-          return {
-            valid: true,
-            bot_username: data.result.username,
-            bot_name: data.result.first_name,
-            bot_id: data.result.id,
-          };
-        }
-        logger.error(`Bot token verification failed: ${JSON.stringify(data)}`);
-        return { valid: false, error: data.description || "Invalid token" };
-      } catch (error) {
-        logger.error(
-          `Error during bot verification (attempt ${attempt}): ${error.message}`
-        );
-        if (attempt === maxRetries) {
-          return { valid: false, error: error.message };
-        }
-        attempt++;
-        await new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
+    try {
+      const response = await axios.get(`${this.baseUrl}/getMe`, {
+        timeout: 10000,
+      });
+      if (response.status === 200 && response.data.ok) {
+        return response.data.result;
       }
+      return null;
+    } catch (error) {
+      console.error("Error verifying bot token:", error.message);
+      return null;
     }
   }
 
   async sendMessage(chatId, text, parseMode = "HTML") {
     try {
-      const response = await this.axiosInstance.post(
+      const payload = {
+        chat_id: chatId,
+        text: text,
+        parse_mode: parseMode,
+      };
+      const response = await axios.post(
         `${this.baseUrl}/sendMessage`,
-        {
-          chat_id: chatId,
-          text,
-          parse_mode: parseMode,
-        }
+        payload,
+        { timeout: 10000 }
       );
-      const data = response.data;
-      if (data.ok) {
-        logger.info(`Message sent successfully to chat ${chatId}`);
-        return { success: true, message_id: data.result.message_id };
-      }
-      logger.error(`Failed to send message: ${JSON.stringify(data)}`);
-      return { success: false, error: data.description || "Unknown error" };
+      return response.status === 200;
     } catch (error) {
-      logger.error(`Error sending message: ${error.message}`);
-      return { success: false, error: error.message };
+      console.error("Error sending message:", error.message);
+      return false;
     }
   }
 
   async setWebhook(webhookUrl) {
-    const maxRetries = 3;
-    let attempt = 1;
-
-    while (attempt <= maxRetries) {
-      try {
-        console.log(`Setting webhook (attempt ${attempt}): ${webhookUrl}`);
-        const response = await this.axiosInstance.post(
-          `${this.baseUrl}/setWebhook`,
-          {
-            url: webhookUrl,
-            allowed_updates: ["message"],
-          }
-        );
-        const data = response.data;
-        if (data.ok) {
-          logger.info(`Webhook set successfully: ${webhookUrl}`);
-          return { success: true };
-        }
-        logger.error(`Failed to set webhook: ${JSON.stringify(data)}`);
-        return { success: false, error: data.description || "Unknown error" };
-      } catch (error) {
-        logger.error(
-          `Error setting webhook (attempt ${attempt}): ${
-            error.message
-          } - ${JSON.stringify(error.response?.data || {})}`
-        );
-        if (attempt === maxRetries) {
-          return { success: false, error: error.message };
-        }
-        attempt++;
-        await new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
-      }
+    try {
+      const payload = { url: webhookUrl };
+      const response = await axios.post(`${this.baseUrl}/setWebhook`, payload, {
+        timeout: 10000,
+      });
+      return response.status === 200;
+    } catch (error) {
+      console.error("Error setting webhook:", error.message);
+      return false;
     }
   }
 
-  formatTradingviewAlert(alertData) {
+  formatTradingViewAlert(alertData) {
     try {
-      if (typeof alertData === "string") {
-        try {
-          alertData = JSON.parse(alertData);
-        } catch {
-          return `📊 <b>TradingView Alert</b>\n\n${alertData}`;
-        }
-      }
-      let message = "📊 <b>TradingView Alert</b>\n\n";
-      if (typeof alertData === "object" && alertData !== null) {
-        for (const [key, value] of Object.entries(alertData)) {
-          const formattedKey = key
-            .replace("_", " ")
-            .replace(/\b\w/g, (c) => c.toUpperCase());
-          message += `<b>${formattedKey}:</b> ${value}\n`;
-        }
-      } else {
-        message += String(alertData);
-      }
-      message += `\n⏰ <i>Alert received at ${new Date()
-        .toISOString()
-        .replace("T", " ")
-        .slice(0, 19)}</i>`;
-      return message;
+      // Handle both JSON string and object
+      const data =
+        typeof alertData === "string" ? JSON.parse(alertData) : alertData;
+
+      // Extract common fields
+      const symbol = data.ticker || data.symbol || "Unknown";
+      const action = data["strategy.order.action"] || data.action || "Alert";
+      const price = data.close || data.price || "N/A";
+      const time = data.time || new Date().toISOString();
+
+      // Create formatted message
+      const message = `
+🔔 <b>TradingView Alert</b>
+
+📊 <b>Symbol:</b> ${symbol}
+⚡ <b>Action:</b> ${action}
+💰 <b>Price:</b> ${price}
+🕐 <b>Time:</b> ${time}
+
+<i>Alert data:</i>
+<pre>${JSON.stringify(data, null, 2)}</pre>
+`;
+      return message.trim();
     } catch (error) {
-      logger.error(`Error formatting alert: ${error}`);
-      return `📊 <b>TradingView Alert</b>\n\n${String(alertData)}`;
+      console.error("Error formatting alert:", error.message);
+      return `TradingView Alert: ${JSON.stringify(alertData)}`;
     }
   }
 }
 
-const generateAuthCommand = (botUsername, userId) => {
-  const uniqueData = `${userId}:${Math.floor(Date.now() / 1000)}`;
-  const encodedData = base64.encode(uniqueData);
+function generateAuthCommand(botUsername, userId) {
+  const timestamp = Math.floor(Date.now() / 1000);
+  const authData = `${userId}:${timestamp}`;
+  const encodedData = Buffer.from(authData).toString("base64");
   return `/auth@${botUsername} ${encodedData}`;
-};
+}
 
-// API Routes
-app.post("/api/setup_bot", async (req, res) => {
-  console.log("Received POST /api/setup_bot:", req.body);
-  const { bot_token, alert_type = "personal" } = req.body;
-  if (!bot_token) {
-    return res.status(400).json({ error: "Bot token is required" });
+function flashMessage(req, message, type = "success") {
+  if (!req.session.flash) {
+    req.session.flash = [];
   }
+  req.session.flash.push({ message, type });
+}
 
-  const telegramService = new TelegramService(bot_token);
-  const verificationResult = await telegramService.verifyBotToken();
+function getFlashMessages(req) {
+  const messages = req.session.flash || [];
+  req.session.flash = [];
+  return messages;
+}
 
-  if (!verificationResult.valid) {
-    return res.status(400).json({ error: verificationResult.error });
-  }
+// HTML Templates
+const INDEX_HTML = `<!DOCTYPE html>
+<html data-bs-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TradingView Telegram Bot</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        body { background: #1a1a1a; }
+        .card { border: none; }
+        .auth-box { background: #2d4a2d; border: 1px solid #4a5c4a; padding: 1rem; border-radius: 0.5rem; }
+        .webhook-url { background: #2d2d2d; border: 1px solid #555; }
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-dark bg-dark">
+        <div class="container">
+            <span class="navbar-brand"><i class="fas fa-robot me-2"></i>TradingView Bot</span>
+        </div>
+    </nav>
+    <div class="container mt-4">
+        {{FLASH_MESSAGES}}
+        
+        <div class="row justify-content-center">
+            <div class="col-md-8">
+                <div class="card">
+                    <div class="card-header">
+                        <h3><i class="fas fa-cog me-2"></i>Connect Telegram Bot</h3>
+                    </div>
+                    <div class="card-body">
+                        <form method="POST" action="/setup">
+                            <div class="mb-3">
+                                <label class="form-label">Bot Token</label>
+                                <input type="text" class="form-control" name="bot_token" required 
+                                       placeholder="1234567890:ABCdefGHIjklMNOpqrsTUVwxyz">
+                                <div class="form-text">Get your bot token from @BotFather on Telegram</div>
+                            </div>
+                            
+                            <div class="mb-3">
+                                <label class="form-label">Alert Type</label>
+                                <select class="form-select" name="alert_type" required>
+                                    <option value="personal">Personal Messages</option>
+                                    <option value="group">Group Chat</option>
+                                    <option value="channel">Channel</option>
+                                </select>
+                            </div>
+                            
+                            <button type="submit" class="btn btn-primary">
+                                <i class="fas fa-check me-2"></i>Setup Bot
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>`;
 
-  const { bot_username, bot_id } = verificationResult;
-
-  try {
-    let user = await db
-      .collection("users")
-      .findOne({ telegram_user_id: bot_id.toString() });
-    let userId;
-
-    if (user) {
-      userId = user._id.toString();
-      const newAuthCommand = generateAuthCommand(bot_username, userId);
-      await db.collection("users").updateOne(
-        { telegram_user_id: bot_id.toString() },
-        {
-          $set: {
-            bot_token,
-            bot_username,
-            alert_type,
-            auth_command: newAuthCommand,
-            chat_id: null,
-          },
+const DASHBOARD_HTML = `<!DOCTYPE html>
+<html data-bs-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bot Dashboard</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        body { background: #1a1a1a; }
+        .card { border: none; }
+        .auth-box { background: #2d4a2d; border: 1px solid #4a5c4a; padding: 1rem; border-radius: 0.5rem; }
+        .webhook-url { background: #2d2d2d; border: 1px solid #555; padding: 0.75rem; border-radius: 0.375rem; }
+        .copy-btn { cursor: pointer; }
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-dark bg-dark">
+        <div class="container">
+            <span class="navbar-brand"><i class="fas fa-robot me-2"></i>TradingView Bot</span>
+            <a href="/" class="btn btn-outline-light btn-sm">New Bot</a>
+        </div>
+    </nav>
+    
+    <div class="container mt-4">
+        {{FLASH_MESSAGES}}
+        
+        <div class="row">
+            <div class="col-md-8">
+                <div class="card">
+                    <div class="card-header">
+                        <h4><i class="fas fa-robot me-2"></i>Bot: @{{BOT_USERNAME}}</h4>
+                    </div>
+                    <div class="card-body">
+                        {{AUTH_STATUS}}
+                        
+                        <div class="mt-4">
+                            <h6>Webhook URL for TradingView:</h6>
+                            <div class="webhook-url d-flex align-items-center justify-content-between">
+                                <code id="webhook-url">{{WEBHOOK_URL}}</code>
+                                <i class="fas fa-copy copy-btn ms-2" onclick="copyWebhook()" title="Copy to clipboard"></i>
+                            </div>
+                            <small class="text-muted">Copy this URL and use it in your TradingView alert webhook settings.</small>
+                        </div>
+                        
+                        <div class="mt-4">
+                            <a href="/regenerate/{{USER_ID}}" class="btn btn-warning btn-sm">
+                                <i class="fas fa-sync me-2"></i>Regenerate Secret
+                            </a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="col-md-4">
+                <div class="card">
+                    <div class="card-header">
+                        <h6><i class="fas fa-chart-line me-2"></i>Recent Alerts</h6>
+                    </div>
+                    <div class="card-body">
+                        {{RECENT_ALERTS}}
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        function copyWebhook() {
+            const webhookUrl = document.getElementById('webhook-url').textContent;
+            navigator.clipboard.writeText(webhookUrl).then(() => {
+                const icon = document.querySelector('.copy-btn');
+                icon.className = 'fas fa-check copy-btn ms-2';
+                setTimeout(() => {
+                    icon.className = 'fas fa-copy copy-btn ms-2';
+                }, 2000);
+            });
         }
-      );
-    } else {
-      const secretKey = uuidv4();
-      const tempAuthCommand = `/auth@${bot_username} temp`;
-      const result = await db.collection("users").insertOne({
-        telegram_user_id: bot_id.toString(),
-        bot_token,
-        bot_username,
-        secret_key: secretKey,
-        auth_command: tempAuthCommand,
-        alert_type,
-        created_at: new Date(),
-      });
-      userId = result.insertedId.toString();
-      const finalAuthCommand = generateAuthCommand(bot_username, userId);
-      await db
-        .collection("users")
-        .updateOne(
-          { _id: new ObjectId(userId) },
-          { $set: { auth_command: finalAuthCommand } }
-        );
-      user = await db
-        .collection("users")
-        .findOne({ _id: new ObjectId(userId) });
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>`;
+
+function renderFlashMessages(messages) {
+  if (!messages || messages.length === 0) return "";
+
+  return messages
+    .map(
+      ({ message, type }) => `
+        <div class="alert alert-${
+          type === "error" ? "danger" : "success"
+        } alert-dismissible">
+            ${message}
+            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+        </div>
+    `
+    )
+    .join("");
+}
+
+// Routes
+app.get("/", (req, res) => {
+  const flashMessages = renderFlashMessages(getFlashMessages(req));
+  const html = INDEX_HTML.replace("{{FLASH_MESSAGES}}", flashMessages);
+  res.send(html);
+});
+
+app.post("/setup", async (req, res) => {
+  try {
+    const { bot_token, alert_type } = req.body;
+
+    if (!bot_token || !bot_token.trim()) {
+      flashMessage(req, "Bot token is required", "error");
+      return res.redirect("/");
     }
 
-    // Use Render URL for webhook
-    const webhookBaseUrl = "https://xat-fg8p.onrender.com";
-    const webhookUrl = `${webhookBaseUrl}/api/webhook/telegram/${userId}`;
-    const webhookResult = await telegramService.setWebhook(webhookUrl);
-    if (!webhookResult.success) {
-      logger.error(
-        `Webhook setup failed for ${webhookUrl}: ${webhookResult.error}`
+    // Verify bot token
+    const telegramService = new TelegramService(bot_token.trim());
+    const botInfo = await telegramService.verifyBotToken();
+
+    if (!botInfo) {
+      flashMessage(
+        req,
+        "Invalid bot token. Please check your token and try again.",
+        "error"
       );
-      return res.status(500).json({
-        error: `Bot verified but webhook setup failed: ${webhookResult.error}`,
-      });
+      return res.redirect("/");
     }
 
-    res.json({ user_id: userId, bot_username });
+    // Generate user ID and secret
+    const userId = users.size + 1;
+    const secretKey = uuidv4();
+    const botUsername = botInfo.username || "unknown";
+
+    // Generate authentication command
+    const authCommand = generateAuthCommand(botUsername, userId);
+
+    // Store user data in memory
+    const userData = {
+      id: userId,
+      botToken: bot_token.trim(),
+      botUsername,
+      secretKey,
+      authCommand,
+      alertType: alert_type || "personal",
+      chatId: null,
+      createdAt: new Date(),
+    };
+    users.set(userId, userData);
+
+    // Set webhook for Telegram bot
+    const protocol = req.get("X-Forwarded-Proto") || req.protocol;
+    const host = req.get("Host");
+    const webhookUrl = `${protocol}://${host}/webhook/telegram/${userId}`;
+    await telegramService.setWebhook(webhookUrl);
+
+    flashMessage(req, "Bot configured successfully!", "success");
+    res.redirect(`/dashboard/${userId}`);
   } catch (error) {
-    logger.error(`Error setting up bot: ${error}`);
-    res.status(500).json({ error: "Bot verified but setup failed" });
+    console.error("Error in setup:", error);
+    flashMessage(req, "An error occurred while setting up the bot", "error");
+    res.redirect("/");
   }
 });
 
-app.get("/api/dashboard/:userId", async (req, res) => {
-  console.log("Received GET /api/dashboard/:userId:", req.params.userId);
-  const { userId } = req.params;
-  try {
-    const user = await db
-      .collection("users")
-      .findOne({ _id: new ObjectId(userId) });
-    if (!user) {
-      return res.status(404).json({ error: "User not found" });
-    }
+app.get("/dashboard/:userId", (req, res) => {
+  const userId = parseInt(req.params.userId);
+  const userData = users.get(userId);
 
-    const alerts = await db
-      .collection("alerts")
-      .find({ user_id: userId })
-      .sort({ created_at: -1 })
-      .limit(5)
-      .toArray();
-
-    const webhookBaseUrl = "https://xat-fg8p.onrender.com";
-    const webhookUrl = `${webhookBaseUrl}/api/webhook/tradingview/${userId}/${user.secret_key}`;
-    res.json({ user, webhook_url: webhookUrl, alerts });
-  } catch (error) {
-    logger.error(`Error loading dashboard: ${error}`);
-    res.status(404).json({ error: "User not found" });
+  if (!userData) {
+    return res.status(404).send("User not found");
   }
+
+  // Get recent alerts for this user
+  const userAlerts = alerts.filter((alert) => alert.userId === userId);
+  const recentAlerts = userAlerts.slice(-10).reverse();
+
+  // Generate webhook URL
+  const protocol = req.get("X-Forwarded-Proto") || req.protocol;
+  const host = req.get("Host");
+  const webhookUrl = `${protocol}://${host}/webhook/tradingview/${userId}/${userData.secretKey}`;
+
+  // Generate auth status HTML
+  let authStatus = "";
+  if (userData.alertType === "personal" && !userData.chatId) {
+    authStatus = `
+            <div class="alert alert-warning">
+                <h6><i class="fas fa-exclamation-triangle me-2"></i>Action Required</h6>
+                <p class="mb-2">To complete personal message setup:</p>
+                <ol class="mb-0 ps-3">
+                    <li>Start a chat with your bot <strong>@${userData.botUsername}</strong></li>
+                    <li>Send this command: <code>${userData.authCommand}</code></li>
+                </ol>
+            </div>
+        `;
+  } else if (userData.chatId) {
+    authStatus = `
+            <div class="alert alert-success">
+                <h6><i class="fas fa-check-circle me-2"></i>${
+                  userData.alertType.charAt(0).toUpperCase() +
+                  userData.alertType.slice(1)
+                } Configured!</h6>
+                <p class="mb-0">Your ${
+                  userData.alertType
+                } is ready to receive alerts.</p>
+            </div>
+        `;
+  } else {
+    authStatus = `
+            <div class="alert alert-info">
+                <h6><i class="fas fa-info-circle me-2"></i>Setup Instructions</h6>
+                <p class="mb-2">For ${userData.alertType} alerts:</p>
+                <ol class="mb-0 ps-3">
+                    <li>Add your bot <strong>@${userData.botUsername}</strong> to your ${userData.alertType}</li>
+                    <li>Send this command: <code>${userData.authCommand}</code></li>
+                </ol>
+            </div>
+        `;
+  }
+
+  // Generate recent alerts HTML
+  let recentAlertsHtml = "";
+  if (recentAlerts.length > 0) {
+    recentAlertsHtml = recentAlerts
+      .map(
+        (alert) => `
+            <div class="alert alert-${
+              alert.sentSuccessfully ? "success" : "danger"
+            } py-2 mb-2">
+                <small>
+                    <i class="fas fa-${
+                      alert.sentSuccessfully ? "check" : "times"
+                    } me-1"></i>
+                    ${alert.createdAt.toLocaleTimeString()}
+                </small>
+            </div>
+        `
+      )
+      .join("");
+  } else {
+    recentAlertsHtml = '<p class="text-muted mb-0">No alerts yet</p>';
+  }
+
+  const flashMessages = renderFlashMessages(getFlashMessages(req));
+  const html = DASHBOARD_HTML.replace("{{FLASH_MESSAGES}}", flashMessages)
+    .replace("{{BOT_USERNAME}}", userData.botUsername)
+    .replace("{{AUTH_STATUS}}", authStatus)
+    .replace("{{WEBHOOK_URL}}", webhookUrl)
+    .replace("{{USER_ID}}", userId)
+    .replace("{{RECENT_ALERTS}}", recentAlertsHtml);
+
+  res.send(html);
 });
 
-app.post("/api/webhook/tradingview/:userId/:secretKey", async (req, res) => {
-  console.log(
-    `Received POST /api/webhook/tradingview/:userId/:secretKey: userId=${req.params.userId}, secretKey=${req.params.secretKey}`
-  );
-  console.log(`Request headers: ${JSON.stringify(req.headers)}`);
-  console.log(`Request body: ${JSON.stringify(req.body)}`);
-
-  const { userId, secretKey } = req.params;
+app.post("/webhook/tradingview/:userId/:secretKey", async (req, res) => {
   try {
-    const user = await db
-      .collection("users")
-      .findOne({ _id: new ObjectId(userId), secret_key: secretKey });
-    if (!user) {
-      logger.warning(`Invalid user_id or secret key: ${userId}`);
-      return res.status(403).json({ error: "Invalid user or secret key" });
+    const userId = parseInt(req.params.userId);
+    const secretKey = req.params.secretKey;
+    const userData = users.get(userId);
+
+    if (!userData || userData.secretKey !== secretKey) {
+      return res.status(404).json({ error: "Not found" });
     }
 
-    const alertData = req.is("json") ? req.body : req.body.toString();
-    logger.info(
-      `Received TradingView alert for user ${userId}: ${JSON.stringify(
-        alertData
-      )}`
-    );
+    // Get webhook data
+    const webhookData = req.body || {};
+    console.log(`Received TradingView alert for user ${userId}:`, webhookData);
 
-    const result = await db.collection("alerts").insertOne({
-      user_id: userId,
-      webhook_data: JSON.stringify(alertData),
-      sent_successfully: false,
-      error_message: null,
-      created_at: new Date(),
-    });
-    const alertId = result.insertedId.toString();
-
-    if (!user.chat_id) {
-      const errorMsg = `No chat configured for ${user.alert_type} alerts. Use ${user.auth_command} command first.`;
-      await db
-        .collection("alerts")
-        .updateOne(
-          { _id: new ObjectId(alertId) },
-          { $set: { error_message: errorMsg } }
-        );
-      logger.error(
-        `No chat ID for user ${userId}, alert type: ${user.alert_type}`
-      );
-      return res.status(400).json({ error: "Chat not configured" });
+    // Check if chat is configured
+    if (!userData.chatId) {
+      const errorMsg =
+        "Chat not configured. Please complete authentication first.";
+      alerts.push({
+        userId,
+        webhookData: JSON.stringify(webhookData),
+        sentSuccessfully: false,
+        createdAt: new Date(),
+        errorMessage: errorMsg,
+      });
+      return res.status(400).json({ error: errorMsg });
     }
 
-    const telegramService = new TelegramService(user.bot_token);
-    const formattedMessage = telegramService.formatTradingviewAlert(alertData);
-    const sendResult = await telegramService.sendMessage(
-      user.chat_id,
+    // Send alert to Telegram
+    const telegramService = new TelegramService(userData.botToken);
+    const formattedMessage =
+      telegramService.formatTradingViewAlert(webhookData);
+
+    const success = await telegramService.sendMessage(
+      userData.chatId,
       formattedMessage
     );
 
-    await db.collection("alerts").updateOne(
-      { _id: new ObjectId(alertId) },
-      {
-        $set: {
-          sent_successfully: sendResult.success,
-          error_message: sendResult.error || null,
-        },
-      }
-    );
+    // Log alert
+    alerts.push({
+      userId,
+      webhookData: JSON.stringify(webhookData),
+      sentSuccessfully: success,
+      createdAt: new Date(),
+      errorMessage: success ? null : "Failed to send message",
+    });
 
-    res.json({ status: "ok", sent: sendResult.success });
+    if (success) {
+      console.log(`Alert sent successfully to chat ${userData.chatId}`);
+      return res.json({ status: "success" });
+    } else {
+      console.error(`Failed to send alert to chat ${userData.chatId}`);
+      return res.status(500).json({ error: "Failed to send alert" });
+    }
   } catch (error) {
-    logger.error(`Error processing TradingView webhook: ${error.message}`);
-    res.status(500).json({ error: "Internal server error" });
+    console.error("Error in tradingview webhook:", error);
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
-app.post("/api/webhook/telegram/:userId", async (req, res) => {
-  console.log(
-    "Received POST /api/webhook/telegram/:userId:",
-    req.params.userId
-  );
-  const { userId } = req.params;
+app.post("/webhook/telegram/:userId", async (req, res) => {
   try {
-    const user = await db
-      .collection("users")
-      .findOne({ _id: new ObjectId(userId) });
-    if (!user) {
-      return res.status(404).json({ error: "User not found" });
+    const userId = parseInt(req.params.userId);
+    const userData = users.get(userId);
+
+    if (!userData) {
+      return res.status(404).json({ error: "Not found" });
     }
 
     const update = req.body;
-    logger.debug(`Received Telegram update: ${JSON.stringify(update)}`);
+    console.log("Received Telegram update:", JSON.stringify(update));
 
-    if (!update.message) {
-      return res.json({ status: "ok" });
-    }
+    // Handle message updates
+    if (update.message) {
+      const message = update.message;
+      const chat = message.chat || {};
+      const text = message.text || "";
 
-    const { text, chat } = update.message;
-    const chatId = String(chat.id);
-    const chatType = chat.type;
+      // Check for auth command
+      if (text.startsWith(`/auth@${userData.botUsername}`)) {
+        const chatId = chat.id;
+        const chatType = chat.type || "private";
 
-    if (text === user.auth_command) {
-      logger.info(
-        `Received correct auth command from chat ${chatId}, type: ${chatType}`
-      );
-      await db
-        .collection("users")
-        .updateOne(
-          { _id: new ObjectId(userId) },
-          { $set: { chat_id: chatId } }
+        console.log(
+          `Received custom auth command from chat ${chatId}, type: ${chatType}`
         );
 
-      const telegramService = new TelegramService(user.bot_token);
-      let welcomeMessage = `🤖 <b>Bot Authenticated Successfully!</b>\n\nYour bot <b>@${user.bot_username}</b> is now ready to send TradingView alerts to this `;
-      welcomeMessage +=
-        chatType === "private"
-          ? "private chat."
-          : chatType === "group" || chatType === "supergroup"
-          ? "group."
-          : chatType === "channel"
-          ? "channel."
-          : "chat.";
-      welcomeMessage += `\n\n📋 <b>Next Steps:</b>\n1️⃣ Copy your webhook URL from the dashboard\n2️⃣ Add it to your TradingView alert settings\n3️⃣ Start receiving alerts automatically!\n\n🔗 Dashboard: https://xat-fg8p.onrender.com/dashboard?user_id=${userId}`;
-      await telegramService.sendMessage(chatId, welcomeMessage);
-      logger.info(`Chat ${chatId} configured for user ${userId}`);
-    } else if (text === "/start" && chatType === "private") {
-      const telegramService = new TelegramService(user.bot_token);
-      const startMessage = `👋 <b>Welcome to @${user.bot_username}!</b>\n\nThis bot is ready to send you TradingView alerts.\n\n📋 <b>To authenticate and start receiving alerts:</b>\nSend this command: <code>${user.auth_command}</code>\n\n🔗 Dashboard: https://xat-fg8p.onrender.com/dashboard?user_id=${userId}`;
-      await telegramService.sendMessage(chatId, startMessage);
+        // Update user's chat_id
+        userData.chatId = String(chatId);
+        users.set(userId, userData);
+
+        // Send confirmation
+        const telegramService = new TelegramService(userData.botToken);
+        const confirmationMsg = `✅ Authentication successful!\n\nYour ${userData.alertType} is now configured to receive TradingView alerts.`;
+        await telegramService.sendMessage(chatId, confirmationMsg);
+
+        console.log(`Chat ${chatId} configured for user ${userId}`);
+      }
     }
 
-    res.json({ status: "ok" });
+    return res.json({ status: "ok" });
   } catch (error) {
-    logger.error(`Error processing Telegram webhook: ${error}`);
-    res.status(500).json({ status: "error" });
+    console.error("Error in telegram webhook:", error);
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
-app.post("/api/user/:userId/regenerate_secret", async (req, res) => {
-  console.log(
-    "Received POST /api/user/:userId/regenerate_secret:",
-    req.params.userId
-  );
-  const { userId } = req.params;
-  try {
-    await db
-      .collection("users")
-      .updateOne(
-        { _id: new ObjectId(userId) },
-        { $set: { secret_key: uuidv4() } }
-      );
-    res.json({ status: "ok" });
-  } catch (error) {
-    logger.error(`Error regenerating secret: ${error}`);
-    res.status(500).json({ error: "Internal server error" });
+app.get("/regenerate/:userId", (req, res) => {
+  const userId = parseInt(req.params.userId);
+  const userData = users.get(userId);
+
+  if (!userData) {
+    return res.status(404).send("User not found");
   }
+
+  // Generate new secret
+  userData.secretKey = uuidv4();
+  users.set(userId, userData);
+
+  flashMessage(req, "Secret key regenerated successfully!", "success");
+  res.redirect(`/dashboard/${userId}`);
 });
 
+// Error handlers
 app.use((req, res) => {
-  res
-    .status(404)
-    .send(
-      "<h1>Page Not Found</h1><p>The requested page could not be found.</p>"
-    );
+  res.status(404).send(`
+        <div class="container mt-5 text-center">
+            <h1>Page Not Found</h1>
+            <p>The requested page could not be found.</p>
+            <a href="/" class="btn btn-primary">Go Home</a>
+        </div>
+    `);
 });
 
-app.get("/", (req, res) => {
-  res.send("Server is alive!");
+app.use((error, req, res, next) => {
+  console.error("Server error:", error);
+  res.status(500).send(`
+        <div class="container mt-5 text-center">
+            <h1>Internal Server Error</h1>
+            <p>Something went wrong on our end.</p>
+            <a href="/" class="btn btn-primary">Go Home</a>
+        </div>
+    `);
 });
 
-app.use((err, req, res, next) => {
-  logger.error(`Server error: ${err}`);
-  res
-    .status(500)
-    .send("<h1>Internal Server Error</h1><p>An unexpected error occurred.</p>");
+// Start server
+app.listen(PORT, "0.0.0.0", () => {
+  console.log("🤖 TradingView Telegram Bot - Node.js Version");
+  console.log(`📱 Server running on http://localhost:${PORT}`);
+  console.log("💡 Press Ctrl+C to stop the server");
 });
 
-const startServer = async () => {
-  try {
-    await initDatabase();
-    const port = process.env.PORT || 5000;
-    app.listen(port, () => {
-      console.log(`🚀 Starting TradingView Telegram Bot Integration Server...`);
-      console.log(
-        `📡 Server will be available at: https://xat-fg8p.onrender.com`
-      );
-    });
-  } catch (error) {
-    console.error("Failed to start server:", error);
-    process.exit(1);
-  }
-};
-
-startServer();
+module.exports = app;
