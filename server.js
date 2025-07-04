@@ -101,6 +101,7 @@ class TelegramService {
 
       // Create formatted message
       const message = `${JSON.stringify(data, null, 2)} : ${data}`;
+      console.dir(data)
 
       return message.trim();
     } catch (error) {
