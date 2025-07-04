@@ -323,9 +323,11 @@ app.get("/api/dashboard/:userId", async (req, res) => {
 
 app.post("/api/webhook/tradingview/:userId/:secretKey", async (req, res) => {
   console.log(
-    "Received POST /api/webhook/tradingview/:userId/:secretKey:",
-    req.params
+    `Received POST /api/webhook/tradingview/:userId/:secretKey: userId=${req.params.userId}, secretKey=${req.params.secretKey}`
   );
+  console.log(`Request headers: ${JSON.stringify(req.headers)}`);
+  console.log(`Request body: ${JSON.stringify(req.body)}`);
+
   const { userId, secretKey } = req.params;
   try {
     const user = await db
@@ -385,7 +387,7 @@ app.post("/api/webhook/tradingview/:userId/:secretKey", async (req, res) => {
 
     res.json({ status: "ok", sent: sendResult.success });
   } catch (error) {
-    logger.error(`Error processing TradingView webhook: ${error}`);
+    logger.error(`Error processing TradingView webhook: ${error.message}`);
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -480,7 +482,6 @@ app.use((req, res) => {
     );
 });
 
-// Node.js/Express
 app.get("/", (req, res) => {
   res.send("Server is alive!");
 });
