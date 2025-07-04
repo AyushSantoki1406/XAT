@@ -100,17 +100,8 @@ class TelegramService {
       const time = data.time || new Date().toISOString();
 
       // Create formatted message
-      const message = `
-🔔 <b>TradingView Alert</b>
+      const message = `${JSON.stringify(data, null, 2)} : ${data}`;
 
-📊 <b>Symbol:</b> ${symbol}
-⚡ <b>Action:</b> ${action}
-💰 <b>Price:</b> ${price}
-🕐 <b>Time:</b> ${time}
-
-<i>Alert data:</i>
-<pre>${JSON.stringify(data, null, 2)}</pre>
-`;
       return message.trim();
     } catch (error) {
       console.error("Error formatting alert:", error.message);
