@@ -109,8 +109,7 @@ class TelegramService {
 }
 
 function generateAuthCommand(botUsername, userId) {
-  // Use HMAC-SHA256 with botUsername and userId
-  const secret = "your-secret-key"; // Replace with a secure secret key
+  const secret = "3HKlcLqdkJmvjhoAf8FnYzr4Ua6QBWtG";
   const data = `${userId}:${botUsername}`;
   const hmac = crypto.createHmac("sha256", secret);
   hmac.update(data);
