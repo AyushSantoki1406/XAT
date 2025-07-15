@@ -204,7 +204,10 @@ app.get("/api", (req, res) => {
 
 app.post("/api/setup", async (req, res) => {
   try {
-    const { bot_token, alert_type } = req.body;
+    // const { bot_token, alert_type } = req.body;
+    const bot_token = req.body.botToken;
+    const alert_type = req.body.alert_type;
+    console.log("alert type ", alert_type, "bot token ", bot_token);
     if (!bot_token || !bot_token.trim()) {
       flashMessage(req, "Bot token is required", "error");
       return res.status(400).json({ error: "Bot token is required" });
