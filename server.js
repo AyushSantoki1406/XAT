@@ -123,7 +123,9 @@ class TelegramService {
 
       // Handle plain text
       if (contentType.includes("text/plain") || typeof alertData === "string") {
-        return `📊 TradingView Alert\n\n${alertData.trim() || "Empty message"}`;
+        return `\n\n${
+          alertData.trim() || "Empty message"
+        } Powered by <a href="https://xalgos.in" target="_blank">Xalgos.in</a>`;
       }
 
       // Handle JSON (object or array)
@@ -133,12 +135,12 @@ class TelegramService {
       ) {
         try {
           const formatted = JSON.stringify(alertData, null, 2);
-          return `📊 TradingView Alert\n\n\`\`\`json\n${formatted}\n\`\`\``;
+          return `\n\n\`\`\`json\n${formatted}\n\`\`\`  Powered by <a href="https://xalgos.in" target="_blank">Xalgos.in</a>`;
         } catch (error) {
           console.error("Error formatting JSON:", error.message);
-          return `📊 TradingView Alert: Malformed JSON data: ${JSON.stringify(
+          return `: Malformed JSON data: ${JSON.stringify(
             alertData
-          )}`;
+          )}  Powered by <a href="https://xalgos.in" target="_blank">Xalgos.in</a>`;
         }
       }
 
