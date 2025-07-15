@@ -125,7 +125,7 @@ class TelegramService {
       if (contentType.includes("text/plain") || typeof alertData === "string") {
         return `\n\n${
           alertData.trim() || "Empty message"
-        } \n\n Powered by Xalgos.in`;
+        } \n\n Powered by xalgos.in`;
       }
 
       // Handle JSON (object or array)
@@ -135,12 +135,12 @@ class TelegramService {
       ) {
         try {
           const formatted = JSON.stringify(alertData, null, 2);
-          return `\n\n\`\`\`json\n${formatted}\n\`\`\`  \n\n Powered by Xalgos.in`;
+          return `\n\n\`\`\`json\n${formatted}\n\`\`\`  \n\n Powered by xalgos.in`;
         } catch (error) {
           console.error("Error formatting JSON:", error.message);
           return `: Malformed JSON data: ${JSON.stringify(
             alertData
-          )}   \n\n Powered by Xalgos.in`;
+          )}   \n\n Powered by xalgos.in`;
         }
       }
 
