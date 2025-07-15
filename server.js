@@ -205,6 +205,7 @@ app.get("/api", (req, res) => {
 app.post("/api/setup", async (req, res) => {
   try {
     // const { bot_token, alert_type } = req.body;
+    console.log(req.body);
     const bot_token = req.body.bot_token;
     const alert_type = req.body.alert_type;
     console.log("alert type ", alert_type, "bot token ", bot_token);
