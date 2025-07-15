@@ -4,7 +4,6 @@ const { v4: uuidv4 } = require("uuid");
 const crypto = require("crypto");
 const cors = require("cors");
 const { MongoClient } = require("mongodb");
-const getRawBody = require("raw-body"); // Add raw-body for fallback
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -32,20 +31,6 @@ async function connectToMongoDB() {
 connectToMongoDB();
 
 // Middleware
-app.use(async (req, res, next) => {
-  // Capture raw body for fallback
-  try {
-    req.rawBody = await getRawBody(req, {
-      length: req.headers["content-length"],
-      limit: "1mb",
-      encoding: "utf8",
-    });
-    next();
-  } catch (error) {
-    console.error("Error capturing raw body:", error.message);
-    return res.status(400).json({ error: "Invalid request body" });
-  }
-});
 app.use(express.text({ type: ["text/plain", "text/*"] }));
 app.use(express.json({ type: ["application/json", "application/*+json"] }));
 app.use(express.urlencoded({ extended: true }));
@@ -91,19 +76,24 @@ class TelegramService {
     }
   }
 
-  async sendMessage(chatId, text, parseMode = null) {
+  async sendMessage(chatId, data, contentType = "text/plain") {
     try {
-      const trimmedText =
-        text.length > 4000 ? text.substring(0, 4000) + "..." : text;
-      const payload = { chat_id: chatId, text: trimmedText };
-      if (parseMode) payload.parse_mode = parseMode;
-      console.log("Sending Telegram message:", payload);
+      // Format the message based on content type
+      const formattedMessage = this.formatTradingViewAlert(data, contentType);
+      const payload = {
+        chat_id: chatId,
+        text: formattedMessage,
+        parse_mode: contentType.includes("application/json")
+          ? "Markdown"
+          : null,
+      };
+
       const response = await axios.post(
         `${this.baseUrl}/sendMessage`,
         payload,
         { timeout: 10000 }
       );
-      console.log(`Sent message to chat ${chatId}:`, trimmedText);
+      console.log(`Sent message to chat ${chatId}:`, formattedMessage);
       return response.status === 200;
     } catch (error) {
       console.error("Error sending message:", error.message);
@@ -113,6 +103,7 @@ class TelegramService {
 
   async setWebhook(webhookUrl) {
     try {
+      // Include channel_post in allowed_updates for channel support
       const response = await axios.post(
         `${this.baseUrl}/setWebhook`,
         {
@@ -133,17 +124,17 @@ class TelegramService {
     try {
       console.log("formatTradingViewAlert input:", { alertData, contentType });
 
+      // Handle null or undefined input
       if (alertData === null || alertData === undefined) {
         return "📊 TradingView Alert: No data received";
       }
 
+      // Handle plain text
       if (contentType.includes("text/plain") || typeof alertData === "string") {
-        const textData =
-          typeof alertData === "string" ? alertData : String(alertData);
-        console.log("Processing plain text alert:", textData);
-        return `📊 TradingView Alert\n\n${textData.trim() || "Empty message"}`;
+        return `📊 TradingView Alert\n\n${alertData.trim() || "Empty message"}`;
       }
 
+      // Handle JSON (object or array)
       if (
         contentType.includes("application/json") ||
         typeof alertData === "object"
@@ -159,6 +150,7 @@ class TelegramService {
         }
       }
 
+      // Fallback for other types
       return `📊 TradingView Alert: Unsupported data format: ${String(
         alertData
       )}`;
@@ -171,11 +163,14 @@ class TelegramService {
   }
 }
 
+// Updated auth command generation for channels
 function generateAuthCommand(botUsername, userId, alertType = "personal") {
   if (alertType === "channel") {
+    // For channels, use a simple auth code format
     const unique_code = uuidv4().substring(0, 8).toUpperCase();
     return `auth ${unique_code}`;
   } else {
+    // For personal and group, use the @ format
     const secret =
       process.env.HMAC_SECRET || "3HKlcLqdkJmvjhoAf8FnYzr4Ua6QBWtG";
     const data = `${userId}`;
@@ -204,11 +199,7 @@ app.get("/api", (req, res) => {
 
 app.post("/api/setup", async (req, res) => {
   try {
-    // const { bot_token, alert_type } = req.body;
-    console.log(req.body);
-    const bot_token = req.body.bot_token;
-    const alert_type = req.body.alert_type;
-    console.log("alert type ", alert_type, "bot token ", bot_token);
+    const { bot_token, alert_type } = req.body;
     if (!bot_token || !bot_token.trim()) {
       flashMessage(req, "Bot token is required", "error");
       return res.status(400).json({ error: "Bot token is required" });
@@ -230,6 +221,7 @@ app.post("/api/setup", async (req, res) => {
     let attempts = 0;
     const maxAttempts = 10;
 
+    // Find a unique userId
     do {
       const userCount = await db.collection("users").countDocuments();
       userId = userCount + 1;
@@ -319,29 +311,25 @@ app.post("/webhook/tradingview/:userId/:secretKey", async (req, res) => {
       return res.status(401).json({ error: "Unauthorized" });
     }
 
-    const contentType = (
-      req.headers["content-type"] || "unknown"
-    ).toLowerCase();
-    console.log("Raw req.body:", req.body);
+    const contentType = req.headers["content-type"] || "unknown";
     console.log(
       `Received TradingView alert for user ${userId}, Content-Type: ${contentType}`
     );
 
     let webhookData;
     if (contentType.includes("application/json")) {
-      webhookData = req.body;
+      webhookData = req.body; // Already parsed by express.json()
     } else if (contentType.includes("text/plain")) {
-      webhookData =
-        typeof req.body === "string"
-          ? req.body
-          : String(req.body || req.rawBody || "");
-      console.log("Processed text/plain data:", webhookData);
+      webhookData = req.body; // Already parsed by express.text()
     } else {
-      webhookData = String(req.body || req.rawBody || "");
+      // Fallback for other content types
+      webhookData = req.body || String(req.rawBody || "");
       console.warn(
         `Unsupported Content-Type: ${contentType}, treating as raw data`
       );
     }
+
+    console.log("Raw webhook data:", webhookData);
 
     if (!userData.chatId) {
       const errorMsg =
@@ -364,10 +352,8 @@ app.post("/webhook/tradingview/:userId/:secretKey", async (req, res) => {
     );
     const success = await telegramService.sendMessage(
       userData.chatId,
-      formattedMessage.length > 4000
-        ? formattedMessage.substring(0, 4000) + "..."
-        : formattedMessage,
-      contentType.includes("json") ? "Markdown" : null
+      webhookData,
+      contentType
     );
 
     await db.collection("alerts").insertOne({
@@ -397,6 +383,7 @@ app.post("/webhook/tradingview/:userId/:secretKey", async (req, res) => {
   }
 });
 
+// FIXED: Enhanced webhook handler for channels
 app.post("/webhook/telegram/:userId", async (req, res) => {
   try {
     const userId = parseInt(req.params.userId);
@@ -419,6 +406,7 @@ app.post("/webhook/telegram/:userId", async (req, res) => {
     const update = req.body;
     let message, chat, text;
 
+    // Handle both regular messages and channel posts
     if (update.message) {
       message = update.message;
       chat = message.chat || {};
@@ -444,7 +432,9 @@ app.post("/webhook/telegram/:userId", async (req, res) => {
 
     const telegramService = new TelegramService(userData.botToken);
 
+    // Handle authentication based on alert type
     if (userData.alertType === "channel") {
+      // For channels, check for simple "auth CODE" format
       if (text.startsWith("auth ") && text.length > 5) {
         const receivedCode = text.substring(5).trim();
         const storedCode = userData.authCommand.startsWith("auth ")
@@ -457,10 +447,14 @@ app.post("/webhook/telegram/:userId", async (req, res) => {
 
         if (receivedCode === storedCode) {
           console.log(`Channel auth successful for user ${userId}`);
+
+          // Update chat ID
           await db
             .collection("users")
             .updateOne({ id: userId }, { $set: { chatId: String(chat.id) } });
+
           console.log(`Chat ID ${chat.id} linked to user ID ${userId}`);
+
           const confirmationMsg = `✅ Authentication successful!\n\nYour ${userData.alertType} is now configured to receive TradingView alerts.`;
           await telegramService.sendMessage(chat.id, confirmationMsg);
           console.log(`Confirmation sent to chat ${chat.id}`);
@@ -473,9 +467,10 @@ app.post("/webhook/telegram/:userId", async (req, res) => {
         }
       }
     } else {
+      // For personal and group messages, use the original logic
       if (
         text.startsWith(`/auth@${userData.botUsername}`) ||
-        text.startsWith(`/auth`)
+        text.startsWith(`/auth`) // Fallback for plain /auth
       ) {
         console.log(`Received auth command from chat ${chat.id}`);
 
