@@ -80,7 +80,7 @@ class TelegramService {
     try {
       const payload = {
         chat_id: chatId,
-        text: `${text}\n\nPowered by xalgos.in`,
+        text: `${text}\n*__Powered by xalgos.in__*`,
       };
       if (parseMode) payload.parse_mode = parseMode;
       const response = await axios.post(
@@ -91,7 +91,7 @@ class TelegramService {
       console.log(`Sent message to chat ${chatId}:`, text);
       return response.status === 200;
     } catch (error) {
-      console.error("Error sending message:", error.message);
+      console.error("Error sending message to chat ${chatId}:", error.message);
       return false;
     }
   }
@@ -116,13 +116,11 @@ class TelegramService {
       console.log("formatTradingViewAlert input:", { alertData, contentType });
 
       if (alertData === null || alertData === undefined) {
-        return "📊 TradingView Alert: No data received\n\nPowered by xalgos.in";
+        return "No data received";
       }
 
       if (contentType.includes("text/plain") || typeof alertData === "string") {
-        return `📊 TradingView Alert\n\n${
-          alertData.trim() || "Empty message"
-        }\n\nPowered by xalgos.in`;
+        return `${alertData.trim() || "Empty message"}`;
       }
 
       if (
@@ -131,23 +129,17 @@ class TelegramService {
       ) {
         try {
           const formatted = JSON.stringify(alertData, null, 2);
-          return `📊 TradingView Alert\n\n\`\`\`json\n${formatted}\n\`\`\`\n\nPowered by xalgos.in`;
+          return `\`\`\`json\n${formatted}\n\`\`\``;
         } catch (error) {
           console.error("Error formatting JSON:", error.message);
-          return `📊 TradingView Alert: Malformed JSON data: ${JSON.stringify(
-            alertData
-          )}\n\nPowered by xalgos.in`;
+          return `Malformed JSON data: ${JSON.stringify(alertData)}`;
         }
       }
 
-      return `📊 TradingView Alert: Unsupported data format: ${String(
-        alertData
-      )}\n\nPowered by xalgos.in`;
+      return `Unsupported data format: ${String(alertData)}`;
     } catch (error) {
       console.error("Error processing alert:", error.message);
-      return `📊 TradingView Alert: Error processing data: ${String(
-        alertData
-      )}\n\nPowered by xalgos.in`;
+      return `Error processing data: ${String(alertData)}`;
     }
   }
 }
@@ -170,7 +162,7 @@ function generateAuthCommand(botUsername, userId, alertType = "personal") {
 function flashMessage(req, message, type = "success") {
   if (!req.session.flash) req.session.flash = [];
   req.session.flash.push({
-    message: `${message}\n\nPowered by xalgos.in`,
+    message: message,
     type,
   });
 }
@@ -189,43 +181,40 @@ app.get("/api", (req, res) => {
 app.post("/api/setup", async (req, res) => {
   try {
     const { bot_token, image, XId } = req.body;
-    if (!bot_token || !bot_token.trim() || !XId || !XId.trim()) {
-      flashMessage(req, "Bot token and XId are required", "error");
+
+    if (!bot_token || !bot_token.trim()) {
+      flashMessage(req, "Bot token is required", "error");
       return res.status(400).json({
-        error: "Bot token and XId are required\n\nPowered by xalgos.in",
+        error: "Bot token is required",
+      });
+    }
+
+    const existingUser = await db
+      .collection("users")
+      .findOne({ botToken: bot_token.trim() });
+    if (existingUser) {
+      flashMessage(req, "This bot token is already registered", "error");
+      return res.status(400).json({
+        error: "This bot token is already registered",
       });
     }
 
     const telegramService = new TelegramService(bot_token.trim());
     const botInfo = await telegramService.verifyBotToken();
+
     if (!botInfo) {
       flashMessage(
         req,
         "Invalid bot token. Please check your token and try again.",
         "error"
       );
-      return res
-        .status(400)
-        .json({ error: "Invalid bot token\n\nPowered by xalgos.in" });
+      return res.status(400).json({
+        error: "Invalid bot token",
+      });
     }
 
-    let userId;
-    let existingUser;
-    let attempts = 0;
-    const maxAttempts = 10;
-
-    do {
-      const userCount = await db.collection("users").countDocuments();
-      userId = userCount + 1;
-      existingUser = await db.collection("users").findOne({ XalgoID: XId });
-      attempts++;
-      if (attempts > maxAttempts) {
-        flashMessage(req, "Unable to assign a unique user ID.", "error");
-        return res.status(500).json({
-          error: "Unable to assign a unique user ID\n\nPowered by xalgos.in",
-        });
-      }
-    } while (existingUser && existingUser.XalgoID === XId);
+    const userCount = await db.collection("users").countDocuments();
+    const userId = userCount + 1;
 
     const secretKey = uuidv4();
     const botUsername = botInfo.username || "unknown";
@@ -233,11 +222,13 @@ app.post("/api/setup", async (req, res) => {
     const alerts = alertTypes.map((alertType) => ({
       alertType,
       authCommand: generateAuthCommand(botUsername, userId, alertType),
+      chatId: null,
     }));
 
     const protocol = req.get("X-Forwarded-Proto") || req.protocol;
     const host = req.get("Host");
     const webhookUrl = `${protocol}://${host}/webhook/telegram/${userId}`;
+    const webhookTradingViewUrl = `${protocol}://${host}/webhook/tradingview/${userId}/${secretKey}`;
 
     const userData = {
       id: userId,
@@ -245,10 +236,9 @@ app.post("/api/setup", async (req, res) => {
       botUsername,
       image: image || null,
       secretKey,
-      chatId: null,
       alerts,
-      XalgoID: XId,
-      webhookURL: webhookUrl,
+      XalgoID: XId || null,
+      webhookURL: webhookTradingViewUrl,
       createdAt: new Date(),
     };
 
@@ -263,10 +253,8 @@ app.post("/api/setup", async (req, res) => {
       .limit(10)
       .toArray();
 
-    const webhookTradingViewUrl = `${protocol}://${host}/webhook/tradingview/${userId}/${secretKey}`;
-
     flashMessage(req, "Bot configured successfully!", "success");
-    res.json({
+    return res.json({
       redirect: `/dashboard/${userId}`,
       flashMessages: getFlashMessages(req),
       userData,
@@ -276,9 +264,9 @@ app.post("/api/setup", async (req, res) => {
   } catch (error) {
     console.error("Error in setup:", error.message, error.stack);
     flashMessage(req, "An error occurred while setting up the bot", "error");
-    return res
-      .status(500)
-      .json({ error: "Internal server error\n\nPowered by xalgos.in" });
+    return res.status(500).json({
+      error: "Internal server error",
+    });
   }
 });
 
@@ -289,9 +277,7 @@ app.get("/api/dashboard/:userId", async (req, res) => {
 
     if (!userData) {
       flashMessage(req, "User not found", "error");
-      return res
-        .status(404)
-        .json({ error: "User not found\n\nPowered by xalgos.in" });
+      return res.status(404).json({ error: "User not found" });
     }
 
     const userAlerts = await db
@@ -317,9 +303,7 @@ app.get("/api/dashboard/:userId", async (req, res) => {
       "An error occurred while fetching dashboard data",
       "error"
     );
-    res
-      .status(500)
-      .json({ error: "Internal server error\n\nPowered by xalgos.in" });
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -333,9 +317,7 @@ app.post("/webhook/tradingview/:userId/:secretKey", async (req, res) => {
       console.log(
         `Unauthorized access: userId=${userId}, secretKey=${secretKey}`
       );
-      return res
-        .status(401)
-        .json({ error: "Unauthorized\n\nPowered by xalgos.in" });
+      return res.status(401).json({ error: "Unauthorized" });
     }
 
     const contentType = req.headers["content-type"] || "unknown";
@@ -356,9 +338,38 @@ app.post("/webhook/tradingview/:userId/:secretKey", async (req, res) => {
       );
     }
 
-    if (!userData.chatId) {
+    const telegramService = new TelegramService(userData.botToken);
+    const formattedMessage = telegramService.formatTradingViewAlert(
+      webhookData,
+      contentType
+    );
+
+    let allSuccess = true;
+    const alertResults = [];
+
+    // Send message to all authenticated chatIds in alerts array
+    for (const alert of userData.alerts) {
+      if (alert.chatId) {
+        const success = await telegramService.sendMessage(
+          alert.chatId,
+          formattedMessage,
+          contentType.includes("json") ? "Markdown" : null
+        );
+        alertResults.push({
+          alertType: alert.alertType,
+          chatId: alert.chatId,
+          sentSuccessfully: success,
+          errorMessage: success
+            ? null
+            : `Failed to send message to ${alert.alertType}`,
+        });
+        if (!success) allSuccess = false;
+      }
+    }
+
+    if (alertResults.length === 0) {
       const errorMsg =
-        "Chat not configured. Please complete authentication first.";
+        "No chats configured. Please complete authentication for at least one alert type.";
       await db.collection("alerts").insertOne({
         userId,
         webhookData,
@@ -368,37 +379,25 @@ app.post("/webhook/tradingview/:userId/:secretKey", async (req, res) => {
         errorMessage: errorMsg,
       });
       return res.status(400).json({
-        error:
-          "Chat not configured. Please complete authentication first.\n\nPowered by xalgos.in",
+        error: "No chats configured. Please complete authentication first.",
       });
     }
 
-    const telegramService = new TelegramService(userData.botToken);
-    const formattedMessage = telegramService.formatTradingViewAlert(
-      webhookData,
-      contentType
-    );
-    const success = await telegramService.sendMessage(
-      userData.chatId,
-      formattedMessage,
-      contentType.includes("json") ? "Markdown" : null
-    );
-
+    // Store alert in the database
     await db.collection("alerts").insertOne({
       userId,
       webhookData,
       contentType,
       formattedMessage,
-      sentSuccessfully: success,
+      sentSuccessfully: allSuccess,
       createdAt: new Date(),
-      errorMessage: success ? null : "Failed to send message",
+      errorMessage: allSuccess ? null : "Failed to send to some chats",
+      alertResults,
     });
 
-    return success
+    return allSuccess
       ? res.json({ status: "success" })
-      : res
-          .status(500)
-          .json({ error: "Failed to send alert\n\nPowered by xalgos.in" });
+      : res.status(500).json({ error: "Failed to send alert to some chats" });
   } catch (error) {
     console.error("Error in tradingview webhook:", error.message, error.stack);
     await db.collection("alerts").insertOne({
@@ -409,9 +408,7 @@ app.post("/webhook/tradingview/:userId/:secretKey", async (req, res) => {
       createdAt: new Date(),
       errorMessage: error.message,
     });
-    return res
-      .status(500)
-      .json({ error: "Internal server error\n\nPowered by xalgos.in" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -426,9 +423,7 @@ app.post("/webhook/telegram/:userId", async (req, res) => {
     const userData = await db.collection("users").findOne({ id: userId });
     if (!userData) {
       console.log(`User not found: userId=${userId}`);
-      return res
-        .status(404)
-        .json({ error: "User not found\n\nPowered by xalgos.in" });
+      return res.status(404).json({ error: "User not found" });
     }
 
     const telegramService = new TelegramService(userData.botToken);
@@ -479,19 +474,24 @@ app.post("/webhook/telegram/:userId", async (req, res) => {
         if (receivedCode === storedCode) {
           await db
             .collection("users")
-            .updateOne({ id: userId }, { $set: { chatId: String(chat.id) } });
+            .updateOne(
+              { id: userId, "alerts.alertType": alert.alertType },
+              { $set: { "alerts.$.chatId": String(chat.id) } }
+            );
           console.log(
-            `Channel auth successful: chatId ${chat.id} linked to userId ${userId}`
+            `Channel auth successful: chatId ${chat.id} linked to userId ${userId} for ${alert.alertType}`
           );
           await telegramService.sendMessage(
             chat.id,
-            `✅ Authentication successful!\nYour ${alert.alertType} is now configured to receive TradingView alerts.`
+            `✅ Authentication successful!\nYour ${alert.alertType} is now configured to receive TradingView alerts.`,
+            "Markdown"
           );
         } else {
           console.log(`Channel auth failed: codes don't match`);
           await telegramService.sendMessage(
             chat.id,
-            `❌ Authentication failed. Please use the correct auth code from the dashboard.`
+            `❌ Authentication failed. Please use the correct auth code from the dashboard.`,
+            "Markdown"
           );
         }
       } else if (
@@ -506,7 +506,8 @@ app.post("/webhook/telegram/:userId", async (req, res) => {
           console.log(`Invalid auth command format: ${text}`);
           await telegramService.sendMessage(
             chat.id,
-            `Please use the full command: /auth@${userData.botUsername} <encodedData>`
+            `Please use the full command: /auth@${userData.botUsername} <encodedData>`,
+            "Markdown"
           );
           return res.json({ status: "ok" });
         }
@@ -516,7 +517,8 @@ app.post("/webhook/telegram/:userId", async (req, res) => {
           console.log(`Invalid auth command: missing encoded data`);
           await telegramService.sendMessage(
             chat.id,
-            `❌ Authentication failed. Please ensure you are using the correct command from the dashboard.`
+            `❌ Authentication failed. Please ensure you are using the correct command from the dashboard.`,
+            "Markdown"
           );
           return res.json({ status: "ok" });
         }
@@ -531,19 +533,24 @@ app.post("/webhook/telegram/:userId", async (req, res) => {
         if (encodedData === expectedEncodedData) {
           await db
             .collection("users")
-            .updateOne({ id: userId }, { $set: { chatId: String(chat.id) } });
+            .updateOne(
+              { id: userId, "alerts.alertType": alert.alertType },
+              { $set: { "alerts.$.chatId": String(chat.id) } }
+            );
           console.log(
-            `Auth successful: chatId ${chat.id} linked to userId ${userId}`
+            `Auth successful: chatId ${chat.id} linked to userId ${userId} for ${alert.alertType}`
           );
           await telegramService.sendMessage(
             chat.id,
-            `✅ Authentication successful!\nYour ${alert.alertType} is now configured to receive TradingView alerts.`
+            `✅ Authentication successful!\nYour ${alert.alertType} is now configured to receive TradingView alerts.`,
+            "Markdown"
           );
         } else {
           console.log(`Auth failed: invalid HMAC signature`);
           await telegramService.sendMessage(
             chat.id,
-            `❌ Authentication failed. Please ensure you are using the correct command from the dashboard.`
+            `❌ Authentication failed. Please ensure you are using the correct command from the dashboard.`,
+            "Markdown"
           );
         }
       }
@@ -552,9 +559,7 @@ app.post("/webhook/telegram/:userId", async (req, res) => {
     return res.json({ status: "ok" });
   } catch (error) {
     console.error("Error in telegram webhook:", error.message, error.stack);
-    return res
-      .status(500)
-      .json({ error: "Internal server error\n\nPowered by xalgos.in" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -565,9 +570,7 @@ app.get("/api/regenerate/:userId", async (req, res) => {
 
     if (!userData) {
       flashMessage(req, "User not found", "error");
-      return res
-        .status(404)
-        .json({ error: "User not found\n\nPowered by xalgos.in" });
+      return res.status(404).json({ error: "User not found" });
     }
 
     const newSecretKey = uuidv4();
@@ -584,22 +587,18 @@ app.get("/api/regenerate/:userId", async (req, res) => {
       "An error occurred while regenerating secret key",
       "error"
     );
-    res
-      .status(500)
-      .json({ error: "Internal server error\n\nPowered by xalgos.in" });
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 
 app.use((req, res) => {
   console.log(`404 Not Found: ${req.method} ${req.url}`);
-  res.status(404).json({ error: "Not found\n\nPowered by xalgos.in" });
+  res.status(404).json({ error: "Not found" });
 });
 
 app.use((error, req, res, next) => {
   console.error("Server error:", error.message, error.stack);
-  res
-    .status(500)
-    .json({ error: "Internal server error\n\nPowered by xalgos.in" });
+  res.status(500).json({ error: "Internal server error" });
 });
 
 app.listen(PORT, () => {
