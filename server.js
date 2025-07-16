@@ -4,6 +4,9 @@ const { setup } = require("./setup.js");
 const app = express();
 app.post("/api/setup", setup());
 
-app.listen(0, () => {
-  console.log("Server started");
+// Use the port Render (or any PaaS) provides
+const PORT = process.env.PORT || 3000;
+
+app.listen(PORT, () => {
+  console.log(`Server started on port ${PORT}`);
 });
